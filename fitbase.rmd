@@ -1,0 +1,307 @@
+---
+title: "fitbase data"
+output:
+  pdf_document: default
+  html_document: default
+---
+# Introduction
+Bellabeat is a high-tech company that manufactures health-focused smart products. Its products are intended for women around the world to track their health through the usage of smart devices. As a junior data analyst for the marketing analyst team at Bellabeat, our goal is to give recommendations for their products based on data driven decision making. Urška Sršen and Sando Mur wants us to select one of their four devices and apply these insights into our presentation.
+
+## Task
+In attempt to boost sales and product effectiveness for Bellabeat, I will be analyzing Fitbit data and identifying trends in their users' data. The goal is to make predictions and suggestions based off of our findings to help Bellabeat better sell their product. 
+
+## Questions considered
+1. What are some trends in smart device usage?
+2. How could these trends apply to Bellabeat customers?
+3. How could these trends help influence Bellabeat marketing strategy?
+
+## Preparation
+To analyze fitness tracker data, we will be using the publicly available FitBit Fitness Tracker Data uploaded on [Kaggle](https://www.kaggle.com/datasets/arashnic/fitbit?resource=download). This source contains 18 csv files and its data is from March 2016 to May 2016. However, we will only be using five of these csv files as we will not be needing hourly and minutely data. About 33 FitBit users were consented to the submission of personal tracker data which includes physical activity, heart rate, sleep, daily activity, and steps. 
+
+## Credibility
+Some limitations to this dataset is that the data is from 2016. Since then, technology and users' daily health habits have changed. Another limitation is that this sample size of 33 users is not representative of the worldwide population. However, for the purpose of this case study, we will assume the data is reliable, original, comprehensive, current, and cited.
+
+# Processing data and R packages
+```{r}
+## Loading libraries
+library(readr)
+library(tidyverse)
+library(dplyr)
+library(sqldf)
+library(lubridate)
+library(ggplot2)
+library(ggpubr)
+```
+
+```{r}
+## Load datasets
+activity = read.csv("dailyActivity_merged.csv")
+calories = read.csv("hourlyCalories_merged.csv")
+intensity = read.csv("dailyIntensities_merged.csv")
+weight = read.csv("weightLogInfo_merged.csv")
+sleep = read.csv("sleepDay_merged.csv")
+```
+## Viewing data and distinct values
+```{r}
+## Activity Data
+head(activity)
+str(activity)
+```
+
+```{r}
+# Removing unnecessary columns in activity data set
+activity = subset(activity, select = -c(LoggedActivitiesDistance,SedentaryActiveDistance))
+head(activity)
+```
+
+```{r}
+## Calories Data
+head(calories)
+str(calories)
+```
+
+```{r}
+## Intensities Data
+head(intensity)
+str(intensity)
+```
+
+```{r}
+## Weight Data
+head(weight)
+str(weight)
+```
+
+```{r}
+## Sleep Data
+head(sleep)
+str(sleep)
+```
+
+```{r}
+## Checking the amount of unique users
+length(unique(activity$Id))
+length(unique(calories$Id))
+length(unique(intensity$Id))
+length(unique(weight$Id))
+length(unique(sleep$Id))
+```
+This verifies that the number of users in the first three data sets have 33 users. Only 8 of the users have data for weight and 24 have data for their sleep.
+
+```{r}
+## Checking for duplicates
+sum(duplicated(activity))
+sum(duplicated(calories))
+sum(duplicated(intensity))
+sum(duplicated(weight))
+sum(duplicated(sleep))
+```
+The only dataset that contains duplicates is sleep. We can easily fix this with keeping unique rows of the dataset
+```{r}
+sleep = distinct(sleep)
+```
+Furthermore, it is important to look for outliers in our data. We can see that there are some 0 values in the column of total steps. These are outliers as the total step count for the rest of the data is all significantly higher than 0.
+```{r}
+## Outliers
+no_steps = activity %>%
+  filter(TotalSteps ==0)
+length(no_steps$TotalSteps)
+```
+Of the 940 total steps observations in the data set, there 77 values of 0 total steps. This indicates that our fitbit users did not wear the tracker on those days. Considering this would affect the outcome of our data analyses, we will remove these rows of data. 
+```{r}
+## Removing rows of data where Fitbit was not worn
+activity[activity$TotalSteps == '0',] = NA
+activity = activity[complete.cases(activity),]
+str(activity)
+```
+
+# Analyzing and Visualizing
+```{r}
+## Comparing average steps and calories of fitbit users to the general population
+mean(activity$TotalSteps)
+
+ggplot(activity, aes(x = TotalSteps, fill = ..count..)) + geom_histogram(alpha = .8, binwidth = 1000) + scale_fill_gradient(low="grey", high="blue") + labs(title = "Histogram of users Total Steps", x = "Total Steps", y = "Count of users") + geom_vline(aes(xintercept = mean(TotalSteps)), color = "black", linetype = "dashed", size =1) + annotate("text", x=mean(activity$TotalSteps), y =40, label = "average = 8319.4 steps", color = "black")
+```
+
+
+The average step count of the fitbit users in this dataset is 8319. This is much higher than the amount that an average American walks, which is 3,000 to 4,000 steps a day, according to Mayo Clinic. 
+```{r}
+## Comparing activities during the week and the weekend
+activity = activity %>%
+  distinct() %>%
+  mutate(ActivityDate = as.Date(ActivityDate, format = "%m/%d/%Y"))
+
+sleep = sleep %>%
+  distinct() %>%
+  mutate(SleepDay = as.Date(SleepDay, format = "%m/%d/%Y"))
+sleep = rename(sleep, ActivityDate = SleepDay)
+activity$weekday = wday(activity$ActivityDate, label = TRUE)
+sleep$sleep_week_day = wday(sleep$ActivityDate, label = TRUE)
+viz = activity %>%
+  group_by(weekday) %>%
+  summarize(TotalSteps = mean(TotalSteps)) %>%
+  ggplot(aes(x = weekday, y = TotalSteps)) + geom_col(mapping=aes(fill=weekday)) + labs(title = "Total Steps Covered by Weekday", x = "Weekday", y = "Total Steps")
+viz
+```
+As we can see, our total step count is highest on Tuesdays and it gradually gets lower until Saturday, where it increases and then goes back down on Sunday. We can further break this down by looking at the activity levels performed throughout the week. This will require a new column that indicates how active the user was on that day. To do this, we will be merging the sleep and activity calories as well. 
+
+```{r}
+## Minute values to limit and categorize sedentarity
+
+minutes1 = 360 #lower limit of waking sedentarity in minutes pere day of what qualifies a sedentary person according to different sources
+minutes2 = 25 #lower limit of moderate / intense physical activity in minutes / day of what qualifies a sedentary person according to different sources
+steps2 = 5000 #lower limit in steps / day of what qualifies a sedentary person according to different sources
+
+## Categorizing users data into levels of activity
+merged_activity_sleep = merge(sleep,activity, by=c("Id","ActivityDate")) %>%
+  mutate(Activity_level_minutes = case_when ((SedentaryMinutes-TotalMinutesAsleep >= minutes1)&(VeryActiveMinutes+FairlyActiveMinutes <= minutes2)&(TotalSteps <=steps2) ~ "0 Sedentary",
+                                          (SedentaryMinutes-TotalMinutesAsleep >= minutes1)&(VeryActiveMinutes+FairlyActiveMinutes <= minutes2)&(TotalSteps >=steps2) ~ "1 Lightly Active",
+                                          (SedentaryMinutes-TotalMinutesAsleep >= minutes1)&(VeryActiveMinutes+FairlyActiveMinutes >= minutes2)&(TotalSteps <=steps2) ~ "1 Lightly Active",
+                                          (SedentaryMinutes-TotalMinutesAsleep >= minutes1)&(VeryActiveMinutes+FairlyActiveMinutes >= minutes2)&(TotalSteps >=steps2) ~ "2 Fairly Active",
+                                          (SedentaryMinutes-TotalMinutesAsleep <= minutes1)&(VeryActiveMinutes+FairlyActiveMinutes <= minutes2)&(TotalSteps <=steps2) ~ "1 Lightly Active",
+                                          (SedentaryMinutes-TotalMinutesAsleep <= minutes1)&(VeryActiveMinutes+FairlyActiveMinutes <= minutes2)&(TotalSteps >=steps2) ~ "2 Fairly Active",
+                                          (SedentaryMinutes-TotalMinutesAsleep <= minutes1)&(VeryActiveMinutes+FairlyActiveMinutes >= minutes2)&(TotalSteps >=steps2) ~ "3 Very Active",
+                                          (SedentaryMinutes-TotalMinutesAsleep <= minutes1)&(VeryActiveMinutes+FairlyActiveMinutes >= minutes2)&(TotalSteps <=steps2) ~ "2 Fairly Active",))
+## Making columns as a factor
+merged_activity_sleep$Activity_level_minutes = as.factor(merged_activity_sleep$Activity_level_minutes)
+merged_activity_sleep$weekday = as.factor(merged_activity_sleep$weekday)
+
+## Visualizing the user activity level by weekday
+ggplot(data = merged_activity_sleep, aes(x = weekday, fill=Activity_level_minutes)) + geom_bar(stat = "count", position = "fill") + labs()
+
+```
+This chart shows us that the Mondays and Tuesdays have the highest levels of being very active and active. As the days go by, this number slowly drops and finally picks up on Friday where it then drops on Sunday. A finding we can make from these two graphs is that these fitbit users tend to be most active during the beginning of the week, then it slowly drops until the weekend where they get more active again. After the Saturday, people tend to be less active on Sundays. Lets also take a look at the distribution of the amount of users whose total steps indicate their activity level. This will tell us the amount of users that are classified into each category for our activity levels in the chart above.
+
+```{r}
+## Classifying users' total steps into levels
+
+low = 5000
+fair = 7500
+high = 10000
+
+activity_level_steps = activity %>%
+  group_by(Id)%>%
+  summarize(avg_daily_steps = mean(TotalSteps))%>%
+  mutate(activity_level = case_when(
+    avg_daily_steps <= low ~ "Sedentary Steps",
+    avg_daily_steps >= low & avg_daily_steps <= fair ~"Lightly Active Steps",
+    avg_daily_steps >= fair & avg_daily_steps <= high ~ "Fairly Active Steps",
+    avg_daily_steps > high ~ "Very Active Steps"
+  ))
+activity_level_steps
+```
+
+```{r}
+## Getting percents for our activity level based on steps
+activity_level_steps_percents = activity_level_steps %>%
+  group_by(activity_level)%>%
+  summarise(total = n()) %>%
+  mutate(percent = scales::percent(total/sum(total)))
+
+activity_level_steps_percents
+
+## Plotting our pie chart
+ggplot(activity_level_steps_percents, aes(x="", y = percent, fill = activity_level)) + geom_bar(stat="identity", width = 1) + coord_polar(theta = "y", start=0) + theme_void() + theme(legend.position="right") + geom_text(aes(label = percent), color = "black", size = 5, position = position_stack(vjust=.5)) + labs(title = "Activity Level by Steps Distribution")
+```
+From our findings, we can see that the amount of users' activity levels based on their mean total steps is fairly distributed across the board. We have 9 users that were classified in lightly and fair active steps, while there were 8 users in sedentary and 7 users in very active steps. This distribution is fairly even and further justifies our chart above proving its aggregation technique. 
+
+```{r}
+## Visualizing the amount of hours slept daily
+ggplot(sleep, aes(x = TotalMinutesAsleep/60)) + geom_histogram(alpha = .8, binwidth = .3, color = "blue", fill="green") + geom_vline(aes(xintercept = mean(TotalMinutesAsleep/60)), color = "black", linetype = "dashed", size =1) + labs(title = "Histogram of users daily Sleep", x = "Total Hours of Sleep", y = "Count of users") + annotate("text", x=mean(sleep$TotalMinutesAsleep)/60, y = 15, label = "average = 6.99 Hours", color = "black")
+summary(sleep$TotalMinutesAsleep/60)
+```
+The data distribution just about follows a bell curve with outliers on both sides. Most users slept more than 7 hours. Lets see how our users' sleep habits change throughout the weekdays.
+```{r}
+## Visualizing the amount of sleep covered by the day of the week 
+
+viz_2 = sleep %>%
+  group_by(sleep_week_day) %>%
+  summarize(TotalMinutesAsleep = mean(TotalMinutesAsleep)) %>%
+  ggplot(aes(x = sleep_week_day, y = TotalMinutesAsleep)) + geom_col(mapping = aes(fill=sleep_week_day)) + labs(title = "Total Minutes Asleep Covered by Weekday", x = "Weekday", y = "Total Minutes Asleep")
+viz_2
+```
+Looking at our chart, we see that the amount of sleep is highest on Sunday and decreases until Wednesday, where it slowly increases again until Saturday. Lets look into this further by seeing which days people tend to oversleep.
+
+```{r}
+## Categorizing sleep durations
+sleep1 = 420 ##420 minutes is equivalent to 7 hours. Anything sleep less than 7 hours will be classified as a short sleep according to the CDC.
+sleep2 = 540 ##540 minutes is equivalent to 9 hours. Sleep duration that is between 7 and 9 hours will be classified as normal sleep. Sleeping over 9 hours will be classified as over sleeping, according to the CDC.
+
+sleep_with_length = sleep %>%
+  mutate(sleep_length = case_when(
+    TotalMinutesAsleep < sleep1 ~ "Short Sleep",
+    TotalMinutesAsleep >= sleep1 & TotalMinutesAsleep <= sleep2 ~ "Normal Sleep",
+    TotalMinutesAsleep > sleep2 ~ "Over Sleep"
+  ))
+
+ggplot(sleep_with_length, aes(x = sleep_week_day, fill = sleep_length)) + geom_bar(stat="count",position = "fill") + labs(title = "Total Minutes Asleep Covered by Weekday", x = "Weekday", y = "Total Minutes Asleep")
+
+```
+As we can see, short sleeping is variant throughout the days. However, we can see that on Sundays, many of the users over slept. We can use this information to give accommodated sleep reminders from our devices. Next, I will see how sleep can be affected by the amount of total steps.
+```{r}
+## Comparing sleep and total steps
+merged_activity_sleep %>%
+  ggplot(aes(x = TotalSteps, y = TotalMinutesAsleep, color = TotalMinutesAsleep)) + geom_point() + geom_smooth(color = "red") + labs(title = "Total Minutes Asleep per day vs. Total Steps per day", x = "Total Steps", y = "Total Minutes Asleep") + stat_cor(method = "pearson", label.x = 18000, label.y = 410)
+```
+As we can see, the data is very spread out here and we can't come to a conclusion with their relationship. Looking at the correlation coefficient, we have a value of -0.19 which indicates a very weak correlation between our two variables. We can't really conclude with anything here, but we can continue to compare total steps and calories burned. 
+```{r}
+## Comparing total steps and calories burned
+merged_activity_sleep %>%
+  ggplot(aes(x = TotalSteps, y = Calories, color = Calories)) + geom_point() + geom_smooth(color = "red") + labs(title = "Total Minutes Asleep per day vs. Calories burned per day", x = "Total Steps", y = "Calories Burned") + stat_cor(method = "pearson", label.x = 17000, label.y = 1500)
+```
+As we can see, the data follows a positive trend and our correlation coefficient is a value of 0.41. This indicates that there is a moderate association with total amount of steps and calories burned. We can conclude that the more steps we take, the higher the amount of calories burned. It will also be beneficial to see how the time spent in bed but not asleep is correlated with calories burned per day.
+```{r}
+# Comparing time spent in bed not sleeping and calories burned per day
+## Creating new column calculating time spent in bed not sleeping
+merged_activity_sleep %>%
+  mutate(Total_minutes_in_bed_not_asleep = TotalTimeInBed - TotalMinutesAsleep) %>%
+  ggplot(aes(x = Total_minutes_in_bed_not_asleep, y = Calories, color = Calories)) + geom_point() + geom_smooth(color = "red") + labs(title = "Total Minutes not asleep in bed per day vs. Calories burned per day", x = "Minutes Spent in Bed Not Asleep", y = "Calories Burned") + stat_cor(method = "pearson", label.x = 200, label.y = 4400)
+```
+Looking at our graph, we can see that there is a negative correlation with calories burned and minutes spent in bed not asleep. As the amount of time spent in bed no asleep increases, the overall trend of calories burned tends to decrease. The R squared value is -0.29, which indicates a negative weak correlation. 
+
+# Sharing Conclusions
+
+1. Fitbit users have an average of 8319 total steps per day. This is almost double the amount that the average American walks, which is 3,000 to 4,000 steps a day, according to Mayo Clinic. Bellabeat can use this information to simply inform potential and existing customers to wear their device, as it will increase their daily step count. 
+
+2. The average total step count of fitbit users is highest on Tuesdays and Saturdays. Throughout other days of the week, they tend to vary. This information can be used as a Bellabeat reminder to influence users to increase their step counts on certain days.
+
+3. Monday and Tuesday are days where users had the highest level of being fairly and very active. Throughout other days of the week, they tend to vary as well. This information can be used for Bellabeat reminders of when to influence users to be more active.
+
+4. The average total minutes of sleep per night is highest on Sundays and Wednesdays. Bellabeat can use this information and give out users reminders on low days like Tuesday and Thursday to sleep early. 
+
+5. It was found that sleeping short of the recommended sleeping hours was highest on Tuesday and Friday. Bellabeat could use this information to remind users the day of to possibly avoid short sleeping. It was also found that Sundays and Saturdays are the most common days of over sleeping. Bellabeat could use this information to remind users before the weekend starts to avoid over sleeping.
+
+6. The higher the amount of total steps, the higher the amount of calories burned. Bellabeat can use this information to set out motivational reminders that the more steps the more calories. 
+
+7. The longer the time spent in bed not sleeping, the less amount of calories burned throughout the day. Bellabeat can use this information to remind users to spend less time in bed when not sleeping, as this will affect their calories burned throughout the day. 
+
+# Act/Recommendations
+
+Bellabeat's existing and potential customers are users who like to wear a device that promotes overall health and wellness. Their smart devices are relied on to give users accurate and helpful data regarding their daily steps, quality of activities, heart rate, sleep, and much more. In the purpose of this case study, we have revealed some helpful tactics that Bellabeat can use to gain effectiveness in their devices. From the data that we have collected, it would be helpful to focus our findings on the Bellabeat Leaf, a tracker that can be worn as a bracelet, necklace, or clip. This device, compared to the Bellbeat Time watch, ensures that users can wear the device comfortably throughout the day and night. The following recommendations will focus on the marketing campaign of the Bellabeat Leaf. 
+
+1. Informing existing and potential Bellabeat customers that people who wear smart trackers are healthier and tend to take more steps in a day. The average user in our study was found to have almost double the amount of an American's average total steps per day. Trackers are effective in systematically increasing overall activity. 
+
+2. Encourage users to stay active throughout the week. Daily steps tend to often vary, consider setting weekly goals for our users and possibly further advocating for them on days where they are likely to drop. We can also apply this technique to the type of activities performed. It would be beneficial to consider setting motivational reminders to perform the same amount or possibly even more of certain types of intensity compared to previous weeks or days.
+
+3. Inspire users to have healthy sleeping habits throughout the week. Durations of sleep tend to vary throughout the week, consider setting weekday and weekend goals for our users. In addition, Bellabeat could also show how being in bed while not sleeping could negatively affect other health aspects such as calories burned.
+
+4. Promote the Bellabeat Leaf as a versatile, stylish device that can be worn throughout the day. Considering the Bellabeat leaf can be worn on various parts of the body, make this a special feature in the marketing. Its ability to comfortably track during our sleep is very powerful. Sleeping habits are often overlooked in smart tracking devices and the Leaf has potential to fill in the gaps where competitors will lack.
+
+5. Consider a type of tracking for stress and menstrual cycles. From our data, it is clear that activities and sleep tend to vary. For Bellabeat, it would be highly beneficial to consider tracking stress and menstrual cycles as part of the factors that play into the variance. This could really make Bellabeat a leader in that area for women. 
+
+# Next Steps
+
+Our case study was designed to identify trends and make suggestions for Bellabeat customers. Although we analyzed Fitbit users in our data set, Fitbit and Bellabeat are both similar companies striving to provide the best health and wellness features in their smart device trackers. Like many, our case study was not perfect. The data we obtained was not the most credible and reliable. Some limitations to this case study are as follows.
+
+1. Our dataset only had 33 users. 33 users is not a very good representation of the general population. We would've liked to see thousands and possibly millions of different users to better serve the general population. In addition, the demographics of our users were unknown. Considering Bellabeat's consumer base is primarily focused on women, we would want to consider a larger dataset with a focus on female users for our next project.
+
+2. Fitbit users were not consistent in logging their activities. We do not know if our users wore their device for the entire day or if they took them off for a certain period. This is very much displayed in our sleeping data and does compromise the completeness of our observations. 
+
+3. Our dataset is from 2016 and only spans about two months. Since 2016, technology along with health interventions have changed. It would be helpful to have a data set that is within the past couple years for this purpose. 
+
+
+
+
+
+
+
